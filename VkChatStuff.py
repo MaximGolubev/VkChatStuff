@@ -3,101 +3,205 @@ import os
 import urllib.request
 from configparser import ConfigParser
 from multiprocessing import Pool as ProcessPool
+from dataclasses import dataclass
 import re
 
-parser = ConfigParser()
-parser.read('login_data.txt')
 
-APP_ID = parser.get('login-section', 'APP_ID')
-LOGIN = parser.get('login-section', 'LOGIN')
-PASSWORD = parser.get('login-section', 'PASSWORD')
-TARGET = parser.get('target-section', 'TARGET')
+@dataclass
+class VkSaverParams:
+    app_id: str=None
+    login: str=None
+    password: str=None
+    target_id: str=None
+    version: str='5.85'
 
+    def is_valid(self):
+        return self.app_id is not None and \
+                self.login is not None and \
+                self.password is not None and \
+                self.target_id is not None
 
-def type_priority(size_type):
-    if size_type == 'w':
-        return 9
-    elif size_type == 'z':
-        return 8
-    elif size_type == 'y':
-        return 7
-    elif size_type == 'r':
-        return 6
-    elif size_type == 'q':
-        return 5
-    elif size_type == 'p':
-        return 4
-    elif size_type == 'o':
-        return 3
-    elif size_type == 'x':
-        return 2
-    elif size_type == 'm':
-        return 1
-    elif size_type == 's':
-        return 0
-    else:
-        return -1
+    def from_ini_file(self,
+                      params_path: str
+                      ):
+        ini_parser = ConfigParser()
+        try:
+            ini_parser.read(params_path)
+            self.app_id = ini_parser.get('login-section', 'APP_ID')
+            self.login = ini_parser.get('login-section', 'LOGIN')
+            self.password = ini_parser.get('login-section', 'PASSWORD')
+            self.target_id = ini_parser.get('target-section', 'TARGET')
+        except Exception:
+            pass
+        return self.is_valid()
 
 
-def save_links(links: list, dir_name: str):
-    for link in links:
-        name = re.sub(r'[^[a-zA-z0-9]', '', link)
-        file_name = dir_name + '/' + name + '.jpg'
-        urllib.request.urlretrieve(link, file_name)
+class VkStuffSaver:
+    def __init__(self,
+                 params: VkSaverParams=None,
+                 params_path: str=None
+                 ):
+        if params is not None and params.is_valid():
+            self.params = params
+            try:
+                self._api = vk_requests.create_api(app_id=params.app_id,
+                                                   login=params.login,
+                                                   password=params.password,
+                                                   api_version=params.version,
+                                                   scope=['messages', 'users'])
+            except vk_requests.exceptions.VkAPIError:
+                self._api = None
 
+        if params is None:
+            self.params = VkSaverParams()
+            self.params.from_ini_file(params_path=params_path)
+            try:
+                self._api = vk_requests.create_api(app_id=self.params.app_id,
+                                                   login=self.params.login,
+                                                   password=self.params.password,
+                                                   api_version=self.params.version,
+                                                   scope=['messages', 'users'])
+            except vk_requests.exceptions.VkAPIError:
+                self._api = None
 
-def to_processes(links: list, dir_name: str, proc_num: int):
-    delta = int(len(links) / proc_num)
-    bounds = [(i * delta, (i + 1) * delta) for i in range(proc_num)]
-    pool = ProcessPool(processes=proc_num)
-    for i in range(proc_num):
-        pool.apply_async(save_links,
-                         (links[bounds[i][0]:bounds[i][1]], dir_name))
-    pool.close()
-    pool.join()
+    def set_params(self,
+                   params: VkSaverParams
+                   ):
+        if not params.is_valid():
+            return False
+        self.params = params
+        try:
+            self._api = vk_requests.create_api(app_id=params.app_id,
+                                               login=params.login,
+                                               password=params.password,
+                                               api_version=params.version,
+                                               scope=['messages', 'users'])
+        except vk_requests.exceptions.VkAPIError:
+            pass
+        return True
+
+    @staticmethod
+    def type_priority(size_type):
+        if size_type == 'w':
+            return 9
+        elif size_type == 'z':
+            return 8
+        elif size_type == 'y':
+            return 7
+        elif size_type == 'r':
+            return 6
+        elif size_type == 'q':
+            return 5
+        elif size_type == 'p':
+            return 4
+        elif size_type == 'o':
+            return 3
+        elif size_type == 'x':
+            return 2
+        elif size_type == 'm':
+            return 1
+        elif size_type == 's':
+            return 0
+        else:
+            return -1
+
+    @staticmethod
+    def to_processes(links: list, dir_name: str, proc_num: int):
+        delta = int(len(links) / proc_num)
+        bounds = [(i * delta, (i + 1) * delta) for i in range(proc_num)]
+        print(bounds)
+        pool = ProcessPool(processes=proc_num)
+        for i in range(proc_num):
+            pool.apply_async(VkStuffSaver.save_links,
+                             (links[bounds[i][0]:bounds[i][1]], dir_name))
+        pool.close()
+        pool.join()
+
+    @staticmethod
+    def save_links(links: list, dir_name: str):
+        # print(links)
+        # print(len(links))
+        for link in links:
+            #print(link[1])
+            name = str(link[1]['date']) + '_' + str(link[2])
+            print(name)
+            file_name = dir_name + '/' + name + '.jpg'
+            print(file_name)
+            urllib.request.urlretrieve(link[0], file_name)
+
+    def _get_links_pack(self,
+                        media_type: str,
+                        start_pos: int,
+                        count: int):
+        links = []
+        peer_id = self.params.target_id
+        attach_pack = self._api.messages.getHistoryAttachments(peer_id=peer_id,
+                                                         count=count,
+                                                         media_type=media_type,
+                                                         start_from=start_pos)
+        items = attach_pack['items']
+        try:
+            next_pos = attach_pack['next_from']
+        except KeyError:
+            next_pos = None
+        for item in items:
+            sizes = item['attachment']['photo']['sizes']
+            sizes.sort(key=lambda x: self.type_priority(x['type']),
+                       reverse=True)
+            url = sizes[0]['url']
+            links.append((url,
+                          {
+                              'date': item['attachment']['photo']['date'],
+                              'size': (sizes[0]['width'], sizes[0]['height'])
+                          },
+                          item['attachment']['photo']['id']
+                          )
+                         )
+        return next_pos, links
+
+    def save_attachments(self,
+                        media_type='photo',
+                        date=None,
+                        output_dir=None):
+        directory = output_dir
+        if not output_dir:
+            user_name = self._api.users.get(user_ids=self.params.target_id)[0]
+            directory = 'id' + \
+                        self.params.target_id + \
+                        '_' + \
+                        user_name['first_name'] + \
+                        '_' + \
+                        user_name['last_name']
+
+        if not os.path.exists(directory):
+            os.mkdir(path=directory)
+
+        start = 0
+        links = []
+
+        while True:
+            try:
+                start, links_pack = self._get_links_pack(media_type=media_type,
+                                                         start_pos=start,
+                                                         count=200)
+                links.extend(links_pack)
+                if start is None:
+                    break
+            except vk_requests.exceptions.VkAPIError:
+                if links:
+                    url = links.pop(0)[0]
+                    file_name = directory + '/' + url.replace('/', '') + '.jpg'
+                    urllib.request.urlretrieve(url, file_name)
+                continue
+
+        self.to_processes(links=links,
+                          dir_name=directory,
+                          proc_num=8)
 
 
 if __name__ == "__main__":
-    api = vk_requests.create_api(app_id=APP_ID,
-                                 login=LOGIN,
-                                 password=PASSWORD,
-                                 scope=['messages, users'],
-                                 api_version='5.80'
-                                 )
-
-    user = api.users.get(user_ids=TARGET)
-    print(user)
-    dir_name = 'E:/' + user[0]['first_name'] + user[0]['last_name'] + 'AllPhoto'
-    if not os.path.exists(dir_name):
-        print(dir_name)
-        os.mkdir(path=dir_name)
-    start = 0
-    links = []
-    print("START")
-    while True:
-        try:
-            attach_pack = api.messages.getHistoryAttachments(peer_id=TARGET,
-                                                             count=200,
-                                                             media_type='photo',
-                                                             start_from=start)
-            items = attach_pack['items']
-            if not items:
-                break
-            start = attach_pack['next_from']
-            for item in items:
-                sizes = item['attachment']['photo']['sizes']
-                sizes.sort(key=lambda x: type_priority(x['type']), reverse=True)
-                links.append(sizes[0]['url'])
-
-        except vk_requests.exceptions.VkAPIError:
-            if links:
-                url = links.pop(0)
-                file_name = dir_name + '/' + url.replace('/', '') + '.jpg'
-                urllib.request.urlretrieve(url, file_name)
-            continue
-
-    print(len(links))
-    to_processes(links, dir_name, 20)
+    saver = VkStuffSaver(params_path='login_data.txt')
+    saver.save_attachments(media_type='photo', output_dir='E:/TestMax')
 
 
 
