@@ -4,22 +4,22 @@ import urllib.request
 from configparser import ConfigParser
 from multiprocessing import Pool as ProcessPool
 from dataclasses import dataclass
-import re
+import time
 
 
 @dataclass
 class VkSaverParams:
-    app_id: str=None
-    login: str=None
-    password: str=None
-    target_id: str=None
-    version: str='5.85'
+    app_id: str = None
+    login: str = None
+    password: str = None
+    target_id: str = None
+    version: str = '5.87'
 
     def is_valid(self):
         return self.app_id is not None and \
-                self.login is not None and \
-                self.password is not None and \
-                self.target_id is not None
+               self.login is not None and \
+               self.password is not None and \
+               self.target_id is not None
 
     def from_ini_file(self,
                       params_path: str
@@ -38,8 +38,8 @@ class VkSaverParams:
 
 class VkStuffSaver:
     def __init__(self,
-                 params: VkSaverParams=None,
-                 params_path: str=None
+                 params: VkSaverParams = None,
+                 params_path: str = None
                  ):
         if params is not None and params.is_valid():
             self.params = params
@@ -108,8 +108,11 @@ class VkStuffSaver:
     @staticmethod
     def to_processes(links: list, dir_name: str, proc_num: int):
         delta = int(len(links) / proc_num)
-        bounds = [(i * delta, (i + 1) * delta) for i in range(proc_num)]
-        print(bounds)
+        bounds = [(i * delta, (i + 1) * delta)
+                  for i in range(proc_num)
+                  if i != proc_num - 1]
+        bounds.append(((proc_num - 1) * delta, len(links)))
+
         pool = ProcessPool(processes=proc_num)
         for i in range(proc_num):
             pool.apply_async(VkStuffSaver.save_links,
@@ -118,32 +121,43 @@ class VkStuffSaver:
         pool.join()
 
     @staticmethod
+    def save_link(link: tuple, dir_name: str):
+        year, month = time.strftime("%Y_%m",
+                                    time.gmtime(link[1]['date'])).split('_')
+        subdirectory = dir_name + '/' + year
+        if not os.path.exists(subdirectory):
+            os.mkdir(path=subdirectory)
+
+        subdirectory += ('/' + month)
+        if not os.path.exists(subdirectory):
+            os.mkdir(path=subdirectory)
+
+        name = str(link[1]['date']) + '_' + str(link[2])
+        file_name = subdirectory + '/' + name + '.jpg'
+        urllib.request.urlretrieve(link[0], file_name)
+
+    @staticmethod
     def save_links(links: list, dir_name: str):
-        # print(links)
-        # print(len(links))
         for link in links:
-            #print(link[1])
-            name = str(link[1]['date']) + '_' + str(link[2])
-            print(name)
-            file_name = dir_name + '/' + name + '.jpg'
-            print(file_name)
-            urllib.request.urlretrieve(link[0], file_name)
+            VkStuffSaver.save_link(link, dir_name)
 
     def _get_links_pack(self,
                         media_type: str,
                         start_pos: int,
-                        count: int):
+                        start_date: str,
+                        end_date: str):
         links = []
         peer_id = self.params.target_id
         attach_pack = self._api.messages.getHistoryAttachments(peer_id=peer_id,
-                                                         count=count,
-                                                         media_type=media_type,
-                                                         start_from=start_pos)
+                                                               count=200,
+                                                               media_type=media_type,
+                                                               start_from=start_pos)
         items = attach_pack['items']
         try:
             next_pos = attach_pack['next_from']
         except KeyError:
             next_pos = None
+
         for item in items:
             sizes = item['attachment']['photo']['sizes']
             sizes.sort(key=lambda x: self.type_priority(x['type']),
@@ -160,9 +174,10 @@ class VkStuffSaver:
         return next_pos, links
 
     def save_attachments(self,
-                        media_type='photo',
-                        date=None,
-                        output_dir=None):
+                         media_type='photo',
+                         start_date=None,
+                         end_date=None,
+                         output_dir=None):
         directory = output_dir
         if not output_dir:
             user_name = self._api.users.get(user_ids=self.params.target_id)[0]
@@ -183,26 +198,23 @@ class VkStuffSaver:
             try:
                 start, links_pack = self._get_links_pack(media_type=media_type,
                                                          start_pos=start,
-                                                         count=200)
+                                                         start_date='0',
+                                                         end_date='0')
                 links.extend(links_pack)
                 if start is None:
                     break
             except vk_requests.exceptions.VkAPIError:
                 if links:
-                    url = links.pop(0)[0]
-                    file_name = directory + '/' + url.replace('/', '') + '.jpg'
-                    urllib.request.urlretrieve(url, file_name)
+                    link = links.pop(0)
+                    VkStuffSaver.save_link(link, directory)
                 continue
 
         self.to_processes(links=links,
                           dir_name=directory,
-                          proc_num=8)
+                          proc_num=16)
 
 
 if __name__ == "__main__":
     saver = VkStuffSaver(params_path='login_data.txt')
-    saver.save_attachments(media_type='photo', output_dir='E:/TestMax')
-
-
-
-
+    saver.save_attachments(media_type='photo',
+                           output_dir="E:/AlexFokinPhoto")
